@@ -1,0 +1,22 @@
+{
+  "name": "x402-github-stats",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "GitHub & NPM stats API paywalled with x402 — AI agents pay per request in USDC",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "@x402/express": "latest",
+    "@x402/evm": "latest",
+    "@x402/core": "latest",
+    "express": "^4.21.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -1,0 +1,583 @@
+/**
+ * x402 GitHub & NPM Stats API
+ * 
+ * AI agents pay per request in USDC on Base via x402 protocol.
+ * Zero cost to run — deployed on free hosting (Vercel/HF Spaces).
+ * Free upstream data: GitHub API + npm API.
+ * 
+ * Endpoints:
+ *   GET /trending     — $0.01 → GitHub trending repos
+ *   GET /repo-stats   — $0.02 → Deep repo analytics
+ *   GET /npm-downloads— $0.01 → Package download stats
+ *   GET /hackernews   — $0.01 → HN top stories + sentiment
+ *   GET /defi-yields  — $0.02 → DeFi yield rates (Aave, Compound)
+ *   GET /health       — FREE  → Service health check
+ *   GET /.well-known/agent.json — A2A discovery card
+ */
+
+import express from 'express';
+import cors from 'cors';
+import dotenv from 'dotenv';
+
+dotenv.config();
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+// ─── CORS (must expose x402 payment headers) ───────────────────────
+app.use(cors({
+  origin: true,
+  exposedHeaders: [
+    'PAYMENT-REQUIRED', 'PAYMENT-RESPONSE',
+    'X-PAYMENT-RESPONSE', 'X-PAYMENT'
+  ]
+}));
+app.use(express.json());
+
+// ─── Your wallet — USDC lands here ──────────────────────────────────
+const RECIPIENT = process.env.RECIPIENT_ADDRESS;
+if (!RECIPIENT || RECIPIENT === '0x000000000000000000000000000000000000dEaD') {
+  console.warn('⚠️  WARNING: RECIPIENT_ADDRESS not set! Payments will go to burn address.');
+  console.warn('   Set it in .env: RECIPIENT_ADDRESS=0xYOUR_WALLET_ADDRESS');
+}
+
+// ─── x402 Setup (lazy-load to handle missing packages gracefully) ──
+let x402Ready = false;
+let x402Error = null;
+
+try {
+  const { paymentMiddleware, x402ResourceServer } = await import('@x402/express');
+  const { ExactEvmScheme } = await import('@x402/evm/exact/server');
+  const { HTTPFacilitatorClient } = await import('@x402/core/server');
+
+  // Use OpenX402 facilitator — FREE, no signup, permissionless
+  const facilitator = new HTTPFacilitatorClient({
+    url: 'https://facilitator.openx402.ai'
+  });
+
+  const resourceServer = new x402ResourceServer(facilitator)
+    .register('eip155:8453', new ExactEvmScheme()); // Base mainnet
+
+  // ─── Payment Routes ──────────────────────────────────────────────
+  const routes = {
+    'GET /trending': {
+      accepts: [{
+        scheme: 'exact',
+        price: '$0.01',
+        network: 'eip155:8453',
+        payTo: RECIPIENT,
+      }],
+      description: 'GitHub trending repositories — languages, stars, growth rate',
+      mimeType: 'application/json',
+    },
+    'GET /repo-stats': {
+      accepts: [{
+        scheme: 'exact',
+        price: '$0.02',
+        network: 'eip155:8453',
+        payTo: RECIPIENT,
+      }],
+      description: 'Deep repo analytics: commit frequency, contributors, health score',
+      mimeType: 'application/json',
+    },
+    'GET /npm-downloads': {
+      accepts: [{
+        scheme: 'exact',
+        price: '$0.01',
+        network: 'eip155:8453',
+        payTo: RECIPIENT,
+      }],
+      description: 'npm package download counts and popularity scoring',
+      mimeType: 'application/json',
+    },
+    'GET /hackernews': {
+      accepts: [{
+        scheme: 'exact',
+        price: '$0.01',
+        network: 'eip155:8453',
+        payTo: RECIPIENT,
+      }],
+      description: 'Hacker News top stories with sentiment classification',
+      mimeType: 'application/json',
+    },
+    'GET /defi-yields': {
+      accepts: [{
+        scheme: 'exact',
+        price: '$0.02',
+        network: 'eip155:8453',
+        payTo: RECIPIENT,
+      }],
+      description: 'DeFi yield rates from Aave and Compound across chains',
+      mimeType: 'application/json',
+    },
+  };
+
+  app.use(paymentMiddleware(routes, resourceServer));
+  x402Ready = true;
+  console.log('✅ x402 payment middleware loaded');
+
+} catch (err) {
+  x402Error = err.message;
+  console.error('❌ x402 middleware failed to load:', err.message);
+  console.error('   Paid endpoints will return errors. Free endpoints still work.');
+  console.error('   Run: npm install @x402/express @x402/evm @x402/core');
+}
+
+// ─── Helper: GitHub API fetch with rate-limit handling ──────────────
+async function githubFetch(url) {
+  const resp = await fetch(url, {
+    headers: {
+      'User-Agent': 'x402-github-stats-api',
+      'Accept': 'application/vnd.github.v3+json',
+    }
+  });
+  if (!resp.ok) {
+    throw new Error(`GitHub API error: ${resp.status} ${resp.statusText}`);
+  }
+  return resp.json();
+}
+
+// ─── PAID ENDPOINTS (only runs AFTER payment is verified) ───────────
+
+/**
+ * GET /trending?q=&language=&since=weekly
+ * GitHub trending repos — new repos sorted by stars
+ */
+app.get('/trending', async (req, res) => {
+  try {
+    const language = req.query.language || '';
+    const since = req.query.since || 'weekly';
+    
+    const daysMap = { daily: 1, weekly: 7, monthly: 30 };
+    const days = daysMap[since] || 7;
+    
+    const dateThreshold = new Date(Date.now() - days * 86400000)
+      .toISOString().split('T')[0];
+
+    const query = `created:>${dateThreshold}${language ? `+language:${language}` : ''}`;
+    const data = await githubFetch(
+      `https://api.github.com/search/repositories?q=${query}&sort=stars&order=desc&per_page=25`
+    );
+
+    const trending = (data.items || []).map(r => ({
+      name: r.full_name,
+      stars: r.stargazers_count,
+      language: r.language,
+      description: r.description,
+      forks: r.forks_count,
+      url: r.html_url,
+      created_at: r.created_at,
+      growth: `+${r.stargazers_count} stars in ${since}`,
+    }));
+
+    res.json({
+      trending,
+      count: trending.length,
+      period: since,
+      fetched_at: new Date().toISOString(),
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch trending repos', details: err.message });
+  }
+});
+
+/**
+ * GET /repo-stats?owner=&repo=
+ * Deep repo analytics with health scoring
+ */
+app.get('/repo-stats', async (req, res) => {
+  try {
+    const { owner, repo } = req.query;
+    if (!owner || !repo) {
+      return res.status(400).json({ error: 'Provide ?owner=USERNAME&repo=REPO' });
+    }
+
+    const [repoData, contribData, langData] = await Promise.all([
+      githubFetch(`https://api.github.com/repos/${owner}/${repo}`),
+      githubFetch(`https://api.github.com/repos/${owner}/${repo}/contributors?per_page=10`),
+      githubFetch(`https://api.github.com/repos/${owner}/${repo}/languages`),
+    ]);
+
+    const contributors = (contribData || []).map(c => ({
+      login: c.login,
+      contributions: c.contributions,
+    }));
+
+    const totalBytes = Object.values(langData || {}).reduce((a, b) => a + b, 0);
+    const languages = Object.entries(langData || {}).map(([lang, bytes]) => ({
+      language: lang,
+      percentage: Math.round((bytes / totalBytes) * 100),
+    }));
+
+    // Health score algorithm
+    const stars = repoData.stargazers_count || 0;
+    const forks = repoData.forks_count || 0;
+    const openIssues = repoData.open_issues_count || 0;
+    const contribCount = contributors.length;
+    const lastPush = new Date(repoData.pushed_at);
+    const daysSincePush = Math.floor((Date.now() - lastPush) / 86400000);
+
+    const healthScore = Math.min(100, Math.round(
+      Math.min(stars / 10, 30) +        // max 30 pts for stars
+      Math.min(forks / 5, 20) +          // max 20 pts for forks
+      Math.min(contribCount * 3, 20) +   // max 20 pts for contributors
+      Math.max(0, 20 - daysSincePush) +  // max 20 pts for recency
+      (openIssues < 50 ? 10 : 5)         // 5-10 pts for manageable issues
+    ));
+
+    const activityLevel = daysSincePush < 7 ? 'very_active' :
+                          daysSincePush < 30 ? 'active' :
+                          daysSincePush < 90 ? 'moderate' : 'dormant';
+
+    res.json({
+      repo: repoData.full_name,
+      description: repoData.description,
+      stars,
+      forks,
+      open_issues: openIssues,
+      license: repoData.license?.spdx_id || 'None',
+      last_push: repoData.pushed_at,
+      default_branch: repoData.default_branch,
+      topics: repoData.topics || [],
+      languages,
+      top_contributors: contributors,
+      analysis: {
+        health_score: healthScore,
+        activity_level: activityLevel,
+        days_since_last_push: daysSincePush,
+        star_to_fork_ratio: forks > 0 ? (stars / forks).toFixed(2) : 'N/A',
+        recommendation: healthScore > 70 ? 'healthy' :
+                       healthScore > 40 ? 'moderate' : 'risky',
+      },
+      fetched_at: new Date().toISOString(),
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch repo stats', details: err.message });
+  }
+});
+
+/**
+ * GET /npm-downloads?package=&period=month
+ * NPM package download stats and popularity tier
+ */
+app.get('/npm-downloads', async (req, res) => {
+  try {
+    const pkg = req.query.package;
+    if (!pkg) {
+      return res.status(400).json({ error: 'Provide ?package=package-name' });
+    }
+
+    const period = req.query.period || 'month';
+    const periodMap = { day: 'last-day', week: 'last-week', month: 'last-month' };
+    const periodKey = periodMap[period] || 'last-month';
+
+    const [dlResp, metaResp] = await Promise.all([
+      fetch(`https://api.npmjs.org/downloads/point/${periodKey}/${pkg}`),
+      fetch(`https://registry.npmjs.org/${pkg}/latest`).catch(() => null),
+    ]);
+
+    const dlData = await dlResp.json();
+    const downloads = dlData.downloads || 0;
+
+    let metadata = {};
+    if (metaResp && metaResp.ok) {
+      const pkgData = await metaResp.json();
+      metadata = {
+        version: pkgData.version || 'unknown',
+        description: pkgData.description || '',
+        license: pkgData.license || 'unknown',
+        dependencies_count: Object.keys(pkgData.dependencies || {}).length,
+      };
+    }
+
+    const popularityTier = downloads > 10000000 ? 'mega' :
+                           downloads > 1000000 ? 'tier1' :
+                           downloads > 100000 ? 'tier2' :
+                           downloads > 10000 ? 'tier3' :
+                           downloads > 1000 ? 'tier4' : 'niche';
+
+    res.json({
+      package: pkg,
+      downloads,
+      period,
+      daily_average: Math.round(downloads / (period === 'day' ? 1 : period === 'week' ? 7 : 30)),
+      popularity_tier: popularityTier,
+      metadata,
+      fetched_at: new Date().toISOString(),
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch npm stats', details: err.message });
+  }
+});
+
+/**
+ * GET /hackernews?count=20
+ * HN top stories with sentiment
+ */
+app.get('/hackernews', async (req, res) => {
+  try {
+    const count = Math.min(parseInt(req.query.count) || 20, 30);
+
+    const topResp = await fetch('https://hacker-news.firebaseio.com/v0/topstories.json');
+    const topIds = await topResp.json();
+    const storyIds = topIds.slice(0, count);
+
+    const stories = await Promise.all(
+      storyIds.map(async (id) => {
+        const resp = await fetch(`https://hacker-news.firebaseio.com/v0/item/${id}.json`);
+        return resp.json();
+      })
+    );
+
+    const results = stories.filter(Boolean).map(s => ({
+      id: s.id,
+      title: s.title,
+      url: s.url || `https://news.ycombinator.com/item?id=${s.id}`,
+      score: s.score,
+      comments: s.descendants || 0,
+      by: s.by,
+      time: new Date(s.time * 1000).toISOString(),
+      // Simple heuristic sentiment based on title keywords
+      sentiment: classifySentiment(s.title || ''),
+    }));
+
+    res.json({
+      stories: results,
+      count: results.length,
+      fetched_at: new Date().toISOString(),
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch HN stories', details: err.message });
+  }
+});
+
+function classifySentiment(text) {
+  const lower = text.toLowerCase();
+  const positive = ['launch', 'release', 'open source', 'free', 'new', 'fast', 'simple', 'success', 'growth', 'win', 'breakthrough'];
+  const negative = ['breach', 'hack', 'fail', 'vulnerability', 'shutdown', 'layoff', 'crash', 'bug', 'exploit', 'deprecated'];
+  
+  const posScore = positive.filter(w => lower.includes(w)).length;
+  const negScore = negative.filter(w => lower.includes(w)).length;
+  
+  if (posScore > negScore) return 'positive';
+  if (negScore > posScore) return 'negative';
+  return 'neutral';
+}
+
+/**
+ * GET /defi-yields?chain=
+ * DeFi yield rates from public data
+ */
+app.get('/defi-yields', async (req, res) => {
+  try {
+    const chainFilter = (req.query.chain || '').toLowerCase();
+
+    // Fetch from DeFi Llama's free API
+    const resp = await fetch('https://yields.llama.fi/pools');
+    const data = await resp.json();
+
+    const topPools = data.data
+      .filter(p => {
+        if (!chainFilter) return true;
+        return p.chain?.toLowerCase().includes(chainFilter);
+      })
+      .filter(p => p.tvlUsd > 1000000 && p.apy > 0) // Only substantial pools
+      .sort((a, b) => b.tvlUsd - a.tvlUsd)
+      .slice(0, 25)
+      .map(p => ({
+        project: p.project,
+        chain: p.chain,
+        symbol: p.symbol,
+        tvl_usd: Math.round(p.tvlUsd),
+        apy: p.apy ? parseFloat(p.apy.toFixed(2)) : null,
+        apy_base: p.apyBase ? parseFloat(p.apyBase.toFixed(2)) : null,
+        apy_reward: p.apyReward ? parseFloat(p.apyReward.toFixed(2)) : null,
+        stablecoin: p.stablecoin,
+        pool: p.pool,
+      }));
+
+    res.json({
+      pools: topPools,
+      count: topPools.length,
+      chain_filter: chainFilter || 'all',
+      fetched_at: new Date().toISOString(),
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch DeFi yields', details: err.message });
+  }
+});
+
+// ─── FREE ENDPOINTS (no payment required) ──────────────────────────
+
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'alive',
+    service: 'x402-github-stats',
+    x402_ready: x402Ready,
+    x402_error: x402Error,
+    recipient: RECIPIENT?.slice(0, 8) + '...',
+    endpoints: {
+      '/trending': '$0.01 — GitHub trending repos',
+      '/repo-stats': '$0.02 — Deep repo analytics',
+      '/npm-downloads': '$0.01 — NPM package stats',
+      '/hackernews': '$0.01 — HN top stories + sentiment',
+      '/defi-yields': '$0.02 — DeFi yield rates',
+      '/health': 'FREE — This health check',
+    },
+    timestamp: new Date().toISOString(),
+  });
+});
+
+/**
+ * A2A Agent Card — lets other AI agents discover your service
+ * Google's Agent-to-Agent protocol discoverability
+ */
+app.get('/.well-known/agent.json', (req, res) => {
+  res.json({
+    name: 'GitHub & NPM Stats API',
+    description: 'Real-time GitHub trending repos, repo analytics, npm download stats, Hacker News stories, and DeFi yield data for AI agents. Pay per request via x402.',
+    url: process.env.SERVICE_URL || `http://localhost:${PORT}`,
+    version: '1.0.0',
+    protocolVersion: '0.3.0',
+    capabilities: {
+      streaming: false,
+      pushNotifications: false,
+    },
+    skills: [
+      {
+        id: 'trending',
+        name: 'GitHub Trending',
+        description: 'Weekly/daily trending GitHub repositories with growth metrics',
+        tags: ['github', 'trending', 'stats', 'repos'],
+        inputModes: ['text/plain'],
+        outputModes: ['application/json'],
+      },
+      {
+        id: 'repo-stats',
+        name: 'Repo Analytics',
+        description: 'Deep repository health analysis with contributor stats and scoring',
+        tags: ['github', 'analytics', 'health', 'contributors'],
+        inputModes: ['text/plain'],
+        outputModes: ['application/json'],
+      },
+      {
+        id: 'npm-downloads',
+        name: 'NPM Download Stats',
+        description: 'Package download counts, popularity tier, and metadata',
+        tags: ['npm', 'downloads', 'package', 'popularity'],
+        inputModes: ['text/plain'],
+        outputModes: ['application/json'],
+      },
+      {
+        id: 'hackernews',
+        name: 'Hacker News Stories',
+        description: 'Top HN stories with sentiment classification',
+        tags: ['hackernews', 'news', 'sentiment', 'tech'],
+        inputModes: ['text/plain'],
+        outputModes: ['application/json'],
+      },
+      {
+        id: 'defi-yields',
+        name: 'DeFi Yield Rates',
+        description: 'Top DeFi yield farming pools with TVL and APY data',
+        tags: ['defi', 'yields', 'apy', 'tvl', 'crypto'],
+        inputModes: ['text/plain'],
+        outputModes: ['application/json'],
+      },
+    ],
+    extensions: [
+      {
+        uri: 'urn:x402:payment:v2',
+        config: {
+          version: '2.0',
+          networks: [
+            {
+              network: 'eip155:8453',
+              name: 'Base',
+              token: 'USDC',
+              gasless: false,
+            },
+          ],
+          wallet: RECIPIENT,
+          facilitator: 'https://facilitator.openx402.ai',
+        },
+      },
+    ],
+  });
+});
+
+// ─── x402 Discovery Extension ──────────────────────────────────────
+app.get('/.well-known/x402', (req, res) => {
+  res.json({
+    version: '2.0',
+    endpoints: [
+      { path: '/trending', price: '$0.01', description: 'GitHub trending repos' },
+      { path: '/repo-stats', price: '$0.02', description: 'Deep repo analytics' },
+      { path: '/npm-downloads', price: '$0.01', description: 'NPM download stats' },
+      { path: '/hackernews', price: '$0.01', description: 'HN stories + sentiment' },
+      { path: '/defi-yields', price: '$0.02', description: 'DeFi yield rates' },
+    ],
+    payment: {
+      networks: ['eip155:8453'],
+      facilitator: 'https://facilitator.openx402.ai',
+      wallet: RECIPIENT,
+    },
+  });
+});
+
+// ─── llms.txt for LLM discoverability ──────────────────────────────
+app.get('/llms.txt', (req, res) => {
+  res.type('text/plain').send(`# x402 GitHub & NPM Stats API
+
+> Real-time data for AI agents. Pay per request via x402 (USDC on Base).
+
+## Endpoints
+
+- GET /trending?language=&since=weekly ($0.01) — GitHub trending repos with stars, growth rate, languages
+- GET /repo-stats?owner=USER&repo=REPO ($0.02) — Deep repo health: contributors, language breakdown, health score, activity level
+- GET /npm-downloads?package=NAME&period=month ($0.01) — Download counts, popularity tier, package metadata
+- GET /hackernews?count=20 ($0.01) — Top HN stories with sentiment classification (positive/negative/neutral)
+- GET /defi-yields?chain=ethereum ($0.02) — Top DeFi yield pools with TVL, APY from DeFi Llama
+- GET /health (FREE) — Service status and endpoint list
+
+## Payment
+
+USDC on Base (eip155:8453) via x402 protocol. Facilitator: facilitator.openx402.ai. No API keys needed.
+
+## Example
+
+\`\`\`
+curl https://your-service.vercel.app/trending
+# → 402 Payment Required (USDC $0.01 on Base)
+# → Agent signs payment, retries with X-PAYMENT header
+# → 200 OK with JSON data
+\`\`\`
+`);
+});
+
+// ─── START ──────────────────────────────────────────────────────────
+app.listen(PORT, () => {
+  console.log('');
+  console.log('🚀 ═══════════════════════════════════════════════════════');
+  console.log('   x402 GitHub & NPM Stats API');
+  console.log('═══════════════════════════════════════════════════════');
+  console.log(`   Status:  ${x402Ready ? '✅ Ready to earn' : '❌ x402 not loaded'}`);
+  console.log(`   Wallet:  ${RECIPIENT?.slice(0, 10)}...${RECIPIENT?.slice(-6)}`);
+  console.log('───────────────────────────────────────────────────────');
+  console.log('   PAID ENDPOINTS:');
+  console.log('   GET /trending      $0.01  GitHub trending repos');
+  console.log('   GET /repo-stats    $0.02  Deep repo analytics');
+  console.log('   GET /npm-downloads $0.01  NPM package stats');
+  console.log('   GET /hackernews    $0.01  HN stories + sentiment');
+  console.log('   GET /defi-yields   $0.02  DeFi yield rates');
+  console.log('───────────────────────────────────────────────────────');
+  console.log('   FREE ENDPOINTS:');
+  console.log('   GET /health               Service status');
+  console.log('   GET /.well-known/agent.json  A2A discovery');
+  console.log('   GET /.well-known/x402        x402 discovery');
+  console.log('   GET /llms.txt                LLM discovery');
+  console.log('═══════════════════════════════════════════════════════');
+  console.log(`   Listening on http://localhost:${PORT}`);
+  console.log('═══════════════════════════════════════════════════════');
+  console.log('');
+});
