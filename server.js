@@ -455,7 +455,7 @@ app.get('/', (req, res) => {
       },
     },
     payment: { network: 'Base (eip155:8453)', asset: 'USDC', protocol: 'x402 v2' },
-    links: { openapi: `${SERVICE_URL}/openapi.json`, llms_txt: `${SERVICE_URL}/llms.txt` },
+    links: { openapi: `${SERVICE_URL.replace(/\/$/,'')}/openapi.json`, llms_txt: `${SERVICE_URL.replace(/\/$/,'')}/llms.txt` },
   });
 });
 
