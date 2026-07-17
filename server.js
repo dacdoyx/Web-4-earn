@@ -818,6 +818,178 @@ app.get('/.well-known/x402', (req, res) => {
   });
 });
 
+// ─── CDP Bazaar Discovery (for Agentic.Market auto-indexing) ──────
+// This is the discovery format that Coinbase's CDP Bazaar reads
+// to auto-index your service on agentic.market
+app.get('/.well-known/x402/bazaar', (req, res) => {
+  res.json({
+    version: '2.0',
+    resources: [
+      {
+        path: '/trending',
+        method: 'GET',
+        price: '$0.01',
+        network: 'eip155:8453',
+        description: 'GitHub trending repositories — languages, stars, growth rate',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            language: { type: 'string', description: 'Filter by programming language', default: '' },
+            since: { type: 'string', enum: ['daily', 'weekly', 'monthly'], default: 'weekly' },
+          },
+        },
+        outputSchema: {
+          type: 'object',
+          properties: {
+            trending: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  name: { type: 'string' },
+                  stars: { type: 'integer' },
+                  language: { type: 'string' },
+                  description: { type: 'string' },
+                  forks: { type: 'integer' },
+                  growth: { type: 'string' },
+                },
+              },
+            },
+            count: { type: 'integer' },
+          },
+        },
+        example_input: { language: 'python', since: 'weekly' },
+        example_output: { trending: [{ name: 'example/repo', stars: 5000, language: 'Python' }], count: 1 },
+      },
+      {
+        path: '/repo-stats',
+        method: 'GET',
+        price: '$0.02',
+        network: 'eip155:8453',
+        description: 'Deep repo analytics: commit frequency, contributors, health score',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            owner: { type: 'string', description: 'Repository owner' },
+            repo: { type: 'string', description: 'Repository name' },
+          },
+          required: ['owner', 'repo'],
+        },
+        outputSchema: {
+          type: 'object',
+          properties: {
+            repo: { type: 'string' },
+            stars: { type: 'integer' },
+            analysis: {
+              type: 'object',
+              properties: {
+                health_score: { type: 'integer' },
+                activity_level: { type: 'string' },
+              },
+            },
+          },
+        },
+        example_input: { owner: 'facebook', repo: 'react' },
+        example_output: { repo: 'facebook/react', stars: 220000, analysis: { health_score: 85, activity_level: 'very_active' } },
+      },
+      {
+        path: '/npm-downloads',
+        method: 'GET',
+        price: '$0.01',
+        network: 'eip155:8453',
+        description: 'npm package download counts and popularity scoring',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            package: { type: 'string', description: 'npm package name' },
+            period: { type: 'string', enum: ['day', 'week', 'month'], default: 'month' },
+          },
+          required: ['package'],
+        },
+        outputSchema: {
+          type: 'object',
+          properties: {
+            package: { type: 'string' },
+            downloads: { type: 'integer' },
+            popularity_tier: { type: 'string' },
+          },
+        },
+        example_input: { package: 'express', period: 'month' },
+        example_output: { package: 'express', downloads: 25000000, popularity_tier: 'mega' },
+      },
+      {
+        path: '/hackernews',
+        method: 'GET',
+        price: '$0.01',
+        network: 'eip155:8453',
+        description: 'Hacker News top stories with sentiment classification',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            count: { type: 'integer', minimum: 1, maximum: 30, default: 20, description: 'Number of stories' },
+          },
+        },
+        outputSchema: {
+          type: 'object',
+          properties: {
+            stories: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  title: { type: 'string' },
+                  score: { type: 'integer' },
+                  sentiment: { type: 'string', enum: ['positive', 'negative', 'neutral'] },
+                },
+              },
+            },
+          },
+        },
+        example_input: { count: 5 },
+        example_output: { stories: [{ title: 'New AI Breakthrough', score: 300, sentiment: 'positive' }], count: 1 },
+      },
+      {
+        path: '/defi-yields',
+        method: 'GET',
+        price: '$0.02',
+        network: 'eip155:8453',
+        description: 'DeFi yield rates from Aave, Compound and more across chains',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            chain: { type: 'string', description: 'Filter by blockchain (e.g. ethereum, arbitrum, base)', default: '' },
+          },
+        },
+        outputSchema: {
+          type: 'object',
+          properties: {
+            pools: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  project: { type: 'string' },
+                  chain: { type: 'string' },
+                  symbol: { type: 'string' },
+                  tvl_usd: { type: 'integer' },
+                  apy: { type: 'number' },
+                },
+              },
+            },
+          },
+        },
+        example_input: { chain: 'ethereum' },
+        example_output: { pools: [{ project: 'aave-v3', chain: 'Ethereum', symbol: 'USDC', tvl_usd: 500000000, apy: 3.5 }], count: 1 },
+      },
+    ],
+    payment: {
+      networks: ['eip155:8453'],
+      facilitator: 'https://facilitator.openx402.ai',
+      wallet: RECIPIENT,
+    },
+  });
+});
+
 // ─── llms.txt for LLM discoverability ──────────────────────────────
 app.get('/llms.txt', (req, res) => {
   res.type('text/plain').send(`# x402 GitHub & NPM Stats API

@@ -9,12 +9,15 @@
     "dev": "node --watch server.js"
   },
   "dependencies": {
-    "@x402/express": "latest",
-    "@x402/evm": "latest",
+    "@coinbase/x402": "^2.1.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@x402/core": "latest",
-    "express": "^4.21.0",
+    "@x402/evm": "latest",
+    "@x402/express": "latest",
     "cors": "^2.8.5",
-    "dotenv": "^16.4.0"
+    "dotenv": "^16.4.0",
+    "express": "^4.21.0",
+    "zod": "^4.4.3"
   },
   "engines": {
     "node": ">=18"
