@@ -54,9 +54,14 @@ try {
   const { ExactEvmScheme } = await import('@x402/evm/exact/server');
   const { HTTPFacilitatorClient } = await import('@x402/core/server');
 
-  // Use OpenX402 facilitator — FREE, no signup, permissionless
+  // Use OpenX402 facilitator — FREE, no signup, no API keys, permissionless
+  // CDP facilitator requires API keys — we use OpenX402 instead
+  // For Agentic Market indexing: we expose /.well-known/x402/bazaar with full metadata
+  const facilitatorUrl = process.env.FACILITATOR_URL || 'https://facilitator.openx402.ai';
+  console.log(`   Using facilitator: ${facilitatorUrl}`);
+
   const facilitator = new HTTPFacilitatorClient({
-    url: 'https://facilitator.openx402.ai'
+    url: facilitatorUrl
   });
 
   const resourceServer = new x402ResourceServer(facilitator)
