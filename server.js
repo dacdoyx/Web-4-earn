@@ -430,6 +430,35 @@ app.get('/defi-yields', async (req, res) => {
 
 // ─── FREE ENDPOINTS (no payment required) ──────────────────────────
 
+// Root landing page — no 404!
+app.get('/', (req, res) => {
+  res.json({
+    name: 'x402 GitHub & NPM Stats API',
+    tagline: 'Real-time data for AI agents. Pay per request in USDC on Base.',
+    wallet: RECIPIENT,
+    facilitator: CDP_API_KEY_NAME ? 'CDP (Coinbase)' : 'OpenX402',
+    endpoints: {
+      paid: {
+        '/trending': { price: '$0.01', desc: 'GitHub trending repos', params: '?language=&since=weekly' },
+        '/repo-stats': { price: '$0.02', desc: 'Deep repo analytics', params: '?owner=USER&repo=REPO' },
+        '/npm-downloads': { price: '$0.01', desc: 'NPM package stats', params: '?package=NAME&period=month' },
+        '/hackernews': { price: '$0.01', desc: 'HN top stories + sentiment', params: '?count=20' },
+        '/defi-yields': { price: '$0.02', desc: 'DeFi yield rates', params: '?chain=ethereum' },
+      },
+      free: {
+        '/health': 'Service health check',
+        '/openapi.json': 'OpenAPI 3.0 spec',
+        '/.well-known/agent.json': 'A2A agent discovery',
+        '/.well-known/x402': 'x402 payment discovery',
+        '/.well-known/x402/bazaar': 'CDP Bazaar discovery',
+        '/llms.txt': 'LLM discoverability',
+      },
+    },
+    payment: { network: 'Base (eip155:8453)', asset: 'USDC', protocol: 'x402 v2' },
+    links: { openapi: `${SERVICE_URL}/openapi.json`, llms_txt: `${SERVICE_URL}/llms.txt` },
+  });
+});
+
 app.get('/health', (req, res) => {
   res.json({
     status: 'alive',
