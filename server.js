@@ -57,16 +57,26 @@ try {
   const { paymentMiddleware, x402ResourceServer } = await import('@x402/express');
   const { ExactEvmScheme } = await import('@x402/evm/exact/server');
   const { HTTPFacilitatorClient } = await import('@x402/core/server');
+  const { createFacilitatorConfig } = await import('@coinbase/x402');
 
-  // Use OpenX402 facilitator — FREE, no signup, no API keys, permissionless
-  // CDP facilitator requires API keys — we use OpenX402 instead
-  // For Agentic Market indexing: we expose /.well-known/x402/bazaar with full metadata
-  const facilitatorUrl = process.env.FACILITATOR_URL || 'https://facilitator.openx402.ai';
-  console.log(`   Using facilitator: ${facilitatorUrl}`);
-
-  const facilitator = new HTTPFacilitatorClient({
-    url: facilitatorUrl
-  });
+  // ─── Choose facilitator based on CDP API keys ──────────────────
+  let facilitator;
+  
+  if (CDP_API_KEY_NAME && CDP_API_KEY_PRIVATE_KEY) {
+    // CDP Facilitator — auto-indexes on Agentic Market after first settlement!
+    const cdpConfig = createFacilitatorConfig(CDP_API_KEY_NAME, CDP_API_KEY_PRIVATE_KEY);
+    facilitator = new HTTPFacilitatorClient({
+      url: cdpConfig.url,
+      createAuthHeaders: cdpConfig.createAuthHeaders,
+    });
+    console.log('   🔑 Using CDP Facilitator (will auto-index on Agentic Market)');
+  } else {
+    // OpenX402 facilitator — free, permissionless, no API keys needed
+    facilitator = new HTTPFacilitatorClient({
+      url: 'https://facilitator.openx402.ai'
+    });
+    console.log('   🆓 Using OpenX402 facilitator (no CDP keys found)');
+  }
 
   const resourceServer = new x402ResourceServer(facilitator)
     .register('eip155:8453', new ExactEvmScheme()); // Base mainnet
