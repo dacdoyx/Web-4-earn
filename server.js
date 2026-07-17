@@ -13,6 +13,9 @@
  *   GET /defi-yields  — $0.02 → DeFi yield rates (Aave, Compound)
  *   GET /health       — FREE  → Service health check
  *   GET /.well-known/agent.json — A2A discovery card
+ *   GET /openapi.json           — OpenAPI 3.0 spec (for x402scan)
+ *   GET /.well-known/x402       — x402 discovery
+ *   GET /llms.txt               — LLM discovery
  */
 
 import express from 'express';
@@ -23,6 +26,7 @@ dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const SERVICE_URL = process.env.SERVICE_URL || `http://localhost:${PORT}`;
 
 // ─── CORS (must expose x402 payment headers) ───────────────────────
 app.use(cors({
@@ -140,7 +144,7 @@ async function githubFetch(url) {
 // ─── PAID ENDPOINTS (only runs AFTER payment is verified) ───────────
 
 /**
- * GET /trending?q=&language=&since=weekly
+ * GET /trending?language=&since=weekly
  * GitHub trending repos — new repos sorted by stars
  */
 app.get('/trending', async (req, res) => {
@@ -218,11 +222,11 @@ app.get('/repo-stats', async (req, res) => {
     const daysSincePush = Math.floor((Date.now() - lastPush) / 86400000);
 
     const healthScore = Math.min(100, Math.round(
-      Math.min(stars / 10, 30) +        // max 30 pts for stars
-      Math.min(forks / 5, 20) +          // max 20 pts for forks
-      Math.min(contribCount * 3, 20) +   // max 20 pts for contributors
-      Math.max(0, 20 - daysSincePush) +  // max 20 pts for recency
-      (openIssues < 50 ? 10 : 5)         // 5-10 pts for manageable issues
+      Math.min(stars / 10, 30) +
+      Math.min(forks / 5, 20) +
+      Math.min(contribCount * 3, 20) +
+      Math.max(0, 20 - daysSincePush) +
+      (openIssues < 50 ? 10 : 5)
     ));
 
     const activityLevel = daysSincePush < 7 ? 'very_active' :
@@ -337,7 +341,6 @@ app.get('/hackernews', async (req, res) => {
       comments: s.descendants || 0,
       by: s.by,
       time: new Date(s.time * 1000).toISOString(),
-      // Simple heuristic sentiment based on title keywords
       sentiment: classifySentiment(s.title || ''),
     }));
 
@@ -372,7 +375,6 @@ app.get('/defi-yields', async (req, res) => {
   try {
     const chainFilter = (req.query.chain || '').toLowerCase();
 
-    // Fetch from DeFi Llama's free API
     const resp = await fetch('https://yields.llama.fi/pools');
     const data = await resp.json();
 
@@ -381,7 +383,7 @@ app.get('/defi-yields', async (req, res) => {
         if (!chainFilter) return true;
         return p.chain?.toLowerCase().includes(chainFilter);
       })
-      .filter(p => p.tvlUsd > 1000000 && p.apy > 0) // Only substantial pools
+      .filter(p => p.tvlUsd > 1000000 && p.apy > 0)
       .sort((a, b) => b.tvlUsd - a.tvlUsd)
       .slice(0, 25)
       .map(p => ({
@@ -428,6 +430,296 @@ app.get('/health', (req, res) => {
   });
 });
 
+// ─── OpenAPI 3.0 Spec (for x402scan registration) ──────────────────
+app.get('/openapi.json', (req, res) => {
+  res.json({
+    openapi: '3.0.3',
+    info: {
+      title: 'x402 GitHub & NPM Stats API',
+      description: 'Real-time GitHub trending repos, repo analytics, npm download stats, Hacker News stories, and DeFi yield data for AI agents. Pay per request via x402 (USDC on Base).',
+      version: '1.0.0',
+      'x-x402': {
+        facilitator: 'https://facilitator.openx402.ai',
+        wallet: RECIPIENT,
+        network: 'eip155:8453',
+      },
+    },
+    servers: [
+      { url: SERVICE_URL, description: 'Production' }
+    ],
+    paths: {
+      '/trending': {
+        get: {
+          summary: 'GitHub trending repositories',
+          description: 'Get trending GitHub repositories with stars, languages, and growth metrics. Costs $0.01 USDC per request.',
+          operationId: 'getTrending',
+          'x-x402': { price: '$0.01', network: 'eip155:8453' },
+          parameters: [
+            {
+              name: 'language',
+              in: 'query',
+              required: false,
+              description: 'Filter by programming language (e.g. python, javascript)',
+              schema: { type: 'string', default: '' }
+            },
+            {
+              name: 'since',
+              in: 'query',
+              required: false,
+              description: 'Time period for trending',
+              schema: { type: 'string', enum: ['daily', 'weekly', 'monthly'], default: 'weekly' }
+            }
+          ],
+          responses: {
+            '200': {
+              description: 'List of trending repositories',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      trending: {
+                        type: 'array',
+                        items: {
+                          type: 'object',
+                          properties: {
+                            name: { type: 'string', example: 'facebook/react' },
+                            stars: { type: 'integer', example: 220000 },
+                            language: { type: 'string', example: 'JavaScript' },
+                            description: { type: 'string', example: 'A JavaScript library for building UIs' },
+                            forks: { type: 'integer', example: 45000 },
+                            url: { type: 'string', format: 'uri' },
+                            created_at: { type: 'string', format: 'date-time' },
+                            growth: { type: 'string', example: '+5000 stars in weekly' }
+                          }
+                        }
+                      },
+                      count: { type: 'integer' },
+                      period: { type: 'string' },
+                      fetched_at: { type: 'string', format: 'date-time' }
+                    }
+                  }
+                }
+              }
+            },
+            '402': { description: 'Payment required — $0.01 USDC on Base' }
+          }
+        }
+      },
+      '/repo-stats': {
+        get: {
+          summary: 'Deep repository analytics',
+          description: 'Get detailed repo health analysis with contributors, language breakdown, and health scoring. Costs $0.02 USDC per request.',
+          operationId: 'getRepoStats',
+          'x-x402': { price: '$0.02', network: 'eip155:8453' },
+          parameters: [
+            {
+              name: 'owner',
+              in: 'query',
+              required: true,
+              description: 'Repository owner/organization',
+              schema: { type: 'string', example: 'facebook' }
+            },
+            {
+              name: 'repo',
+              in: 'query',
+              required: true,
+              description: 'Repository name',
+              schema: { type: 'string', example: 'react' }
+            }
+          ],
+          responses: {
+            '200': {
+              description: 'Detailed repository analytics',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      repo: { type: 'string' },
+                      stars: { type: 'integer' },
+                      forks: { type: 'integer' },
+                      analysis: {
+                        type: 'object',
+                        properties: {
+                          health_score: { type: 'integer', minimum: 0, maximum: 100 },
+                          activity_level: { type: 'string', enum: ['very_active', 'active', 'moderate', 'dormant'] },
+                          recommendation: { type: 'string', enum: ['healthy', 'moderate', 'risky'] }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            '400': { description: 'Missing required parameters: owner and repo' },
+            '402': { description: 'Payment required — $0.02 USDC on Base' }
+          }
+        }
+      },
+      '/npm-downloads': {
+        get: {
+          summary: 'NPM package download stats',
+          description: 'Get download counts, popularity tier, and metadata for any npm package. Costs $0.01 USDC per request.',
+          operationId: 'getNpmDownloads',
+          'x-x402': { price: '$0.01', network: 'eip155:8453' },
+          parameters: [
+            {
+              name: 'package',
+              in: 'query',
+              required: true,
+              description: 'npm package name',
+              schema: { type: 'string', example: 'express' }
+            },
+            {
+              name: 'period',
+              in: 'query',
+              required: false,
+              description: 'Download period',
+              schema: { type: 'string', enum: ['day', 'week', 'month'], default: 'month' }
+            }
+          ],
+          responses: {
+            '200': {
+              description: 'Package download statistics',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      package: { type: 'string' },
+                      downloads: { type: 'integer' },
+                      popularity_tier: { type: 'string', enum: ['mega', 'tier1', 'tier2', 'tier3', 'tier4', 'niche'] },
+                      daily_average: { type: 'integer' }
+                    }
+                  }
+                }
+              }
+            },
+            '400': { description: 'Missing required parameter: package' },
+            '402': { description: 'Payment required — $0.01 USDC on Base' }
+          }
+        }
+      },
+      '/hackernews': {
+        get: {
+          summary: 'Hacker News top stories with sentiment',
+          description: 'Get top HN stories with sentiment classification (positive/negative/neutral). Costs $0.01 USDC per request.',
+          operationId: 'getHackerNews',
+          'x-x402': { price: '$0.01', network: 'eip155:8453' },
+          parameters: [
+            {
+              name: 'count',
+              in: 'query',
+              required: false,
+              description: 'Number of stories to return (max 30)',
+              schema: { type: 'integer', minimum: 1, maximum: 30, default: 20 }
+            }
+          ],
+          responses: {
+            '200': {
+              description: 'List of HN stories with sentiment',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      stories: {
+                        type: 'array',
+                        items: {
+                          type: 'object',
+                          properties: {
+                            id: { type: 'integer' },
+                            title: { type: 'string' },
+                            score: { type: 'integer' },
+                            sentiment: { type: 'string', enum: ['positive', 'negative', 'neutral'] }
+                          }
+                        }
+                      },
+                      count: { type: 'integer' }
+                    }
+                  }
+                }
+              }
+            },
+            '402': { description: 'Payment required — $0.01 USDC on Base' }
+          }
+        }
+      },
+      '/defi-yields': {
+        get: {
+          summary: 'DeFi yield rates',
+          description: 'Get top DeFi yield farming pools with TVL and APY data from DeFi Llama. Costs $0.02 USDC per request.',
+          operationId: 'getDefiYields',
+          'x-x402': { price: '$0.02', network: 'eip155:8453' },
+          parameters: [
+            {
+              name: 'chain',
+              in: 'query',
+              required: false,
+              description: 'Filter by blockchain (e.g. ethereum, arbitrum, base)',
+              schema: { type: 'string', default: '' }
+            }
+          ],
+          responses: {
+            '200': {
+              description: 'DeFi yield pool data',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      pools: {
+                        type: 'array',
+                        items: {
+                          type: 'object',
+                          properties: {
+                            project: { type: 'string' },
+                            chain: { type: 'string' },
+                            symbol: { type: 'string' },
+                            tvl_usd: { type: 'integer' },
+                            apy: { type: 'number' }
+                          }
+                        }
+                      },
+                      count: { type: 'integer' }
+                    }
+                  }
+                }
+              }
+            },
+            '402': { description: 'Payment required — $0.02 USDC on Base' }
+          }
+        }
+      },
+      '/health': {
+        get: {
+          summary: 'Health check',
+          description: 'Service health and status — FREE, no payment required.',
+          operationId: 'getHealth',
+          security: [],
+          responses: {
+            '200': {
+              description: 'Service status',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      status: { type: 'string', example: 'alive' },
+                      x402_ready: { type: 'boolean' }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  });
+});
+
 /**
  * A2A Agent Card — lets other AI agents discover your service
  * Google's Agent-to-Agent protocol discoverability
@@ -436,7 +728,7 @@ app.get('/.well-known/agent.json', (req, res) => {
   res.json({
     name: 'GitHub & NPM Stats API',
     description: 'Real-time GitHub trending repos, repo analytics, npm download stats, Hacker News stories, and DeFi yield data for AI agents. Pay per request via x402.',
-    url: process.env.SERVICE_URL || `http://localhost:${PORT}`,
+    url: SERVICE_URL,
     version: '1.0.0',
     protocolVersion: '0.3.0',
     capabilities: {
@@ -510,12 +802,13 @@ app.get('/.well-known/agent.json', (req, res) => {
 app.get('/.well-known/x402', (req, res) => {
   res.json({
     version: '2.0',
+    openapi_url: `${SERVICE_URL}/openapi.json`,
     endpoints: [
-      { path: '/trending', price: '$0.01', description: 'GitHub trending repos' },
-      { path: '/repo-stats', price: '$0.02', description: 'Deep repo analytics' },
-      { path: '/npm-downloads', price: '$0.01', description: 'NPM download stats' },
-      { path: '/hackernews', price: '$0.01', description: 'HN stories + sentiment' },
-      { path: '/defi-yields', price: '$0.02', description: 'DeFi yield rates' },
+      { path: '/trending', method: 'GET', price: '$0.01', description: 'GitHub trending repos' },
+      { path: '/repo-stats', method: 'GET', price: '$0.02', description: 'Deep repo analytics' },
+      { path: '/npm-downloads', method: 'GET', price: '$0.01', description: 'NPM download stats' },
+      { path: '/hackernews', method: 'GET', price: '$0.01', description: 'HN stories + sentiment' },
+      { path: '/defi-yields', method: 'GET', price: '$0.02', description: 'DeFi yield rates' },
     ],
     payment: {
       networks: ['eip155:8453'],
@@ -543,6 +836,10 @@ app.get('/llms.txt', (req, res) => {
 ## Payment
 
 USDC on Base (eip155:8453) via x402 protocol. Facilitator: facilitator.openx402.ai. No API keys needed.
+
+## OpenAPI Spec
+
+GET /openapi.json — Full OpenAPI 3.0 specification
 
 ## Example
 
@@ -573,6 +870,7 @@ app.listen(PORT, () => {
   console.log('───────────────────────────────────────────────────────');
   console.log('   FREE ENDPOINTS:');
   console.log('   GET /health               Service status');
+  console.log('   GET /openapi.json          OpenAPI 3.0 spec');
   console.log('   GET /.well-known/agent.json  A2A discovery');
   console.log('   GET /.well-known/x402        x402 discovery');
   console.log('   GET /llms.txt                LLM discovery');
