@@ -45,6 +45,10 @@ if (!RECIPIENT || RECIPIENT === '0x000000000000000000000000000000000000dEaD') {
   console.warn('   Set it in .env: RECIPIENT_ADDRESS=0xYOUR_WALLET_ADDRESS');
 }
 
+// ─── CDP API Keys (for Agentic Market auto-indexing) ──────────────
+const CDP_API_KEY_NAME = process.env.CDP_API_KEY_NAME || '';
+const CDP_API_KEY_PRIVATE_KEY = process.env.CDP_API_KEY_PRIVATE_KEY || '';
+
 // ─── x402 Setup (lazy-load to handle missing packages gracefully) ──
 let x402Ready = false;
 let x402Error = null;
