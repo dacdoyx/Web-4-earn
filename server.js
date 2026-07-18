@@ -152,6 +152,14 @@ try {
         price: '$0.01',
         network: 'eip155:8453',
         payTo: RECIPIENT,
+        outputSchema: {
+          input: {
+            method: 'GET',
+            discoverable: true,
+            queryParams: { language: { type: 'string' }, since: { type: 'string', enum: ['daily','weekly','monthly'] } }
+          },
+          output: { trending: [{ name: 'string', stars: 0, language: 'string' }], count: 0 }
+        }
       }],
       description: 'GitHub trending repositories — languages, stars, growth rate',
       mimeType: 'application/json',
@@ -162,6 +170,14 @@ try {
         price: '$0.02',
         network: 'eip155:8453',
         payTo: RECIPIENT,
+        outputSchema: {
+          input: {
+            method: 'GET',
+            discoverable: true,
+            queryParams: { owner: { type: 'string', required: true }, repo: { type: 'string', required: true } }
+          },
+          output: { repo: 'string', stars: 0, analysis: { health_score: 0, activity_level: 'string' } }
+        }
       }],
       description: 'Deep repo analytics: commit frequency, contributors, health score',
       mimeType: 'application/json',
@@ -172,6 +188,14 @@ try {
         price: '$0.01',
         network: 'eip155:8453',
         payTo: RECIPIENT,
+        outputSchema: {
+          input: {
+            method: 'GET',
+            discoverable: true,
+            queryParams: { package: { type: 'string', required: true }, period: { type: 'string' } }
+          },
+          output: { package: 'string', downloads: 0, popularity_tier: 'string' }
+        }
       }],
       description: 'npm package download counts and popularity scoring',
       mimeType: 'application/json',
@@ -182,6 +206,14 @@ try {
         price: '$0.01',
         network: 'eip155:8453',
         payTo: RECIPIENT,
+        outputSchema: {
+          input: {
+            method: 'GET',
+            discoverable: true,
+            queryParams: { count: { type: 'integer' } }
+          },
+          output: { stories: [{ title: 'string', score: 0, sentiment: 'string' }], count: 0 }
+        }
       }],
       description: 'Hacker News top stories with sentiment classification',
       mimeType: 'application/json',
@@ -192,6 +224,14 @@ try {
         price: '$0.02',
         network: 'eip155:8453',
         payTo: RECIPIENT,
+        outputSchema: {
+          input: {
+            method: 'GET',
+            discoverable: true,
+            queryParams: { chain: { type: 'string' } }
+          },
+          output: { pools: [{ project: 'string', chain: 'string', symbol: 'string', tvl_usd: 0, apy: 0 }], count: 0 }
+        }
       }],
       description: 'DeFi yield rates from Aave and Compound across chains',
       mimeType: 'application/json',
@@ -202,6 +242,14 @@ try {
         price: '$0.01',
         network: 'eip155:8453',
         payTo: RECIPIENT,
+        outputSchema: {
+          input: {
+            method: 'POST',
+            discoverable: true,
+            body: { model: 'string', messages: [{ role: 'string', content: 'string' }] }
+          },
+          output: { id: 'string', object: 'chat.completion', choices: [{ message: { role: 'string', content: 'string' } }] }
+        }
       }],
       description: 'OpenAI-compatible LLM chat completions — 8 free NVIDIA models via BlockRun',
       mimeType: 'application/json',
@@ -656,7 +704,7 @@ app.get('/', (req, res) => {
       },
     },
     models: FREE_NVIDIA_MODELS.map(m => m.id),
-    payment: { network: 'Base (eip155:8453)', asset: 'USDC', protocol: 'x402 v2' },
+    payment: { networks: ['Base (eip155:8453)', 'Ethereum (eip155:1)'], asset: 'USDC', protocol: 'x402 v2' },
     links: { openapi: `${SERVICE_URL.replace(/\/$/,'')}/openapi.json`, llms_txt: `${SERVICE_URL.replace(/\/$/,'')}/llms.txt` },
   });
 });
@@ -1070,7 +1118,7 @@ app.get('/.well-known/x402', (req, res) => {
       { path: '/health', method: 'GET', description: 'Service health check' },
     ],
     payment: {
-      networks: ['eip155:8453'],
+      networks: ['eip155:8453', 'eip155:1'],
       facilitator: 'https://facilitator.openx402.ai',
       wallet: RECIPIENT,
     },
@@ -1284,7 +1332,7 @@ app.get('/.well-known/x402/bazaar', (req, res) => {
       },
     ],
     payment: {
-      networks: ['eip155:8453'],
+      networks: ['eip155:8453', 'eip155:1'],
       facilitator: 'https://facilitator.openx402.ai',
       wallet: RECIPIENT,
     },
@@ -1317,7 +1365,7 @@ app.get('/llms.txt', (req, res) => {
 
 ## Payment
 
-USDC on Base (eip155:8453) via x402 protocol. Facilitator: facilitator.openx402.ai. No API keys needed.
+USDC on Base (eip155:8453) or Ethereum mainnet (eip155:1) via x402 protocol. Facilitator: facilitator.openx402.ai. No API keys needed.
 
 ## Quick Start (OpenAI SDK)
 
