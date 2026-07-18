@@ -55,28 +55,49 @@ if (!RECIPIENT || RECIPIENT === '0x000000000000000000000000000000000000dEaD') {
 const CDP_API_KEY_NAME = process.env.CDP_API_KEY_NAME || '';
 const CDP_API_KEY_PRIVATE_KEY = process.env.CDP_API_KEY_PRIVATE_KEY || '';
 
-// ─── BlockRun LLM Client (free NVIDIA models) ────────────────────
-const BLOCKRUN_WALLET_KEY = process.env.BASE_CHAIN_WALLET_KEY || process.env.BLOCKRUN_WALLET_KEY || '';
+// ─── BlockRun LLM Client (free NVIDIA models — lazy init) ─────────
 let llmClient = null;
 let llmModels = [];
+let llmInitPromise = null;
+let llmInitAttempted = false;
 
-if (BLOCKRUN_WALLET_KEY) {
-  try {
-    const { LLMClient } = await import('@blockrun/llm');
-    llmClient = new LLMClient();
-    console.log('✅ BlockRun LLM client initialized (free NVIDIA models)');
-    // Fetch available models in background
-    llmClient.listModels().then(models => {
-      llmModels = Array.isArray(models) ? models : [];
-      console.log(`   📋 ${llmModels.length} models available`);
-    }).catch(e => console.log('   ⚠️ Could not fetch model list:', e.message.slice(0, 80)));
-  } catch (err) {
-    console.warn('⚠️ BlockRun LLM client failed to init:', err.message.slice(0, 100));
-    console.warn('   LLM proxy endpoints will not be available.');
-  }
-} else {
-  console.log('ℹ️ No BASE_CHAIN_WALLET_KEY set — LLM proxy disabled');
+async function ensureLLMClient() {
+  if (llmClient) return llmClient;
+  if (llmInitPromise) return llmInitPromise;
+  
+  llmInitPromise = (async () => {
+    const walletKey = process.env.BASE_CHAIN_WALLET_KEY || process.env.BLOCKRUN_WALLET_KEY || '';
+    if (!walletKey) {
+      throw new Error('No BASE_CHAIN_WALLET_KEY set');
+    }
+    
+    try {
+      const { LLMClient } = await import('@blockrun/llm');
+      process.env.BASE_CHAIN_WALLET_KEY = walletKey;
+      llmClient = new LLMClient();
+      console.log('✅ BlockRun LLM client initialized (free NVIDIA models)');
+      
+      // Fetch model list
+      try {
+        const models = await llmClient.listModels();
+        llmModels = Array.isArray(models) ? models : [];
+        console.log(`   📋 ${llmModels.length} models available`);
+      } catch(e) {
+        console.log('   ⚠️ Could not fetch model list:', e.message.slice(0, 80));
+      }
+      
+      return llmClient;
+    } catch (err) {
+      llmInitPromise = null;
+      throw err;
+    }
+  })();
+  
+  return llmInitPromise;
 }
+
+// Try immediate init (works locally, may fail on serverless cold start)
+ensureLLMClient().catch(() => {});
 
 // Free NVIDIA models (always available through BlockRun)
 const FREE_NVIDIA_MODELS = [
@@ -487,10 +508,14 @@ app.get('/defi-yields', async (req, res) => {
  * Body: { model, messages, max_tokens, temperature, stream }
  */
 app.post('/v1/chat/completions', async (req, res) => {
-  if (!llmClient) {
+  // Lazy init BlockRun client
+  let client;
+  try {
+    client = await ensureLLMClient();
+  } catch (initErr) {
     return res.status(503).json({
       error: {
-        message: 'LLM proxy not available — BlockRun client not initialized',
+        message: 'LLM proxy not available: ' + (initErr.message || 'BlockRun init failed'),
         type: 'server_error',
         code: 'no_llm_client',
       }
@@ -523,7 +548,7 @@ app.post('/v1/chat/completions', async (req, res) => {
     // Handle streaming
     if (stream) {
       try {
-        const streamIter = await llmClient.chatCompletionStream(targetModel, messages, options);
+        const streamIter = await client.chatCompletionStream(targetModel, messages, options);
         
         res.setHeader('Content-Type', 'text/event-stream');
         res.setHeader('Cache-Control', 'no-cache');
@@ -539,12 +564,12 @@ app.post('/v1/chat/completions', async (req, res) => {
       } catch (streamErr) {
         // If streaming fails, fall back to non-streaming
         console.error('Streaming failed, falling back:', streamErr.message?.slice(0, 80));
-        const result = await llmClient.chatCompletion(targetModel, messages, options);
+        const result = await client.chatCompletion(targetModel, messages, options);
         return res.json(result);
       }
     } else {
       // Non-streaming — standard chat completion
-      const result = await llmClient.chatCompletion(targetModel, messages, options);
+      const result = await client.chatCompletion(targetModel, messages, options);
       return res.json(result);
     }
   } catch (err) {
