@@ -1,16 +1,22 @@
 /**
- * x402 GitHub & NPM Stats API
+ * x402 AI Agent Hub — Data API + LLM Proxy
  * 
  * AI agents pay per request in USDC on Base via x402 protocol.
- * Zero cost to run — deployed on free hosting (Vercel/HF Spaces).
- * Free upstream data: GitHub API + npm API.
+ * Zero cost to run — deployed on free hosting (Vercel).
+ * Free upstream: GitHub API, npm API, BlockRun free NVIDIA models.
  * 
- * Endpoints:
+ * Data Endpoints:
  *   GET /trending     — $0.01 → GitHub trending repos
  *   GET /repo-stats   — $0.02 → Deep repo analytics
  *   GET /npm-downloads— $0.01 → Package download stats
  *   GET /hackernews   — $0.01 → HN top stories + sentiment
  *   GET /defi-yields  — $0.02 → DeFi yield rates (Aave, Compound)
+ * 
+ * LLM Proxy (OpenAI-compatible):
+ *   POST /v1/chat/completions — $0.01 → Free NVIDIA models via BlockRun
+ *   GET  /v1/models           — FREE  → List available models
+ * 
+ * Discovery:
  *   GET /health       — FREE  → Service health check
  *   GET /.well-known/agent.json — A2A discovery card
  *   GET /openapi.json           — OpenAPI 3.0 spec (for x402scan)
@@ -48,6 +54,41 @@ if (!RECIPIENT || RECIPIENT === '0x000000000000000000000000000000000000dEaD') {
 // ─── CDP API Keys (for Agentic Market auto-indexing) ──────────────
 const CDP_API_KEY_NAME = process.env.CDP_API_KEY_NAME || '';
 const CDP_API_KEY_PRIVATE_KEY = process.env.CDP_API_KEY_PRIVATE_KEY || '';
+
+// ─── BlockRun LLM Client (free NVIDIA models) ────────────────────
+const BLOCKRUN_WALLET_KEY = process.env.BASE_CHAIN_WALLET_KEY || process.env.BLOCKRUN_WALLET_KEY || '';
+let llmClient = null;
+let llmModels = [];
+
+if (BLOCKRUN_WALLET_KEY) {
+  try {
+    const { LLMClient } = await import('@blockrun/llm');
+    llmClient = new LLMClient();
+    console.log('✅ BlockRun LLM client initialized (free NVIDIA models)');
+    // Fetch available models in background
+    llmClient.listModels().then(models => {
+      llmModels = Array.isArray(models) ? models : [];
+      console.log(`   📋 ${llmModels.length} models available`);
+    }).catch(e => console.log('   ⚠️ Could not fetch model list:', e.message.slice(0, 80)));
+  } catch (err) {
+    console.warn('⚠️ BlockRun LLM client failed to init:', err.message.slice(0, 100));
+    console.warn('   LLM proxy endpoints will not be available.');
+  }
+} else {
+  console.log('ℹ️ No BASE_CHAIN_WALLET_KEY set — LLM proxy disabled');
+}
+
+// Free NVIDIA models (always available through BlockRun)
+const FREE_NVIDIA_MODELS = [
+  { id: 'nvidia/gpt-oss-120b', name: 'GPT-OSS 120B', context: '128K', features: 'general purpose, default' },
+  { id: 'nvidia/gpt-oss-20b', name: 'GPT-OSS 20B', context: '128K', features: 'smaller, faster' },
+  { id: 'nvidia/mistral-large-3-675b', name: 'Mistral Large 3 675B', context: '131K', features: '675B flagship' },
+  { id: 'nvidia/qwen3.5-122b-a10b', name: 'Qwen 3.5 122B', context: '131K', features: 'strong general' },
+  { id: 'nvidia/qwen3-next-80b-a3b-instruct', name: 'Qwen 3 Next 80B', context: '262K', features: 'reasoning + coding' },
+  { id: 'nvidia/llama-4-maverick', name: 'Llama 4 Maverick', context: '131K', features: 'reasoning' },
+  { id: 'nvidia/seed-oss-36b', name: 'Seed OSS 36B', context: '131K', features: 'coding' },
+  { id: 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning', name: 'Nemotron Nano Omni 30B', context: '256K', features: 'vision + reasoning' },
+];
 
 // ─── x402 Setup (lazy-load to handle missing packages gracefully) ──
 let x402Ready = false;
@@ -131,6 +172,16 @@ try {
         payTo: RECIPIENT,
       }],
       description: 'DeFi yield rates from Aave and Compound across chains',
+      mimeType: 'application/json',
+    },
+    'POST /v1/chat/completions': {
+      accepts: [{
+        scheme: 'exact',
+        price: '$0.01',
+        network: 'eip155:8453',
+        payTo: RECIPIENT,
+      }],
+      description: 'OpenAI-compatible LLM chat completions — 8 free NVIDIA models via BlockRun',
       mimeType: 'application/json',
     },
   };
@@ -428,17 +479,140 @@ app.get('/defi-yields', async (req, res) => {
   }
 });
 
+// ─── LLM PROXY ENDPOINTS (OpenAI-compatible) ──────────────────────
+
+/**
+ * POST /v1/chat/completions
+ * OpenAI-compatible LLM proxy — forwards to BlockRun free NVIDIA models
+ * Body: { model, messages, max_tokens, temperature, stream }
+ */
+app.post('/v1/chat/completions', async (req, res) => {
+  if (!llmClient) {
+    return res.status(503).json({
+      error: {
+        message: 'LLM proxy not available — BlockRun client not initialized',
+        type: 'server_error',
+        code: 'no_llm_client',
+      }
+    });
+  }
+
+  try {
+    const { model, messages, max_tokens, temperature, top_p, stream, ...rest } = req.body;
+
+    // Validate request
+    if (!messages || !Array.isArray(messages) || messages.length === 0) {
+      return res.status(400).json({
+        error: {
+          message: 'messages is required and must be a non-empty array',
+          type: 'invalid_request_error',
+          code: 'invalid_messages',
+        }
+      });
+    }
+
+    // Default to nvidia/gpt-oss-120b if no model specified
+    const targetModel = model || 'nvidia/gpt-oss-120b';
+
+    // Build options
+    const options = {};
+    if (max_tokens) options.max_tokens = max_tokens;
+    if (temperature !== undefined) options.temperature = temperature;
+    if (top_p !== undefined) options.top_p = top_p;
+
+    // Handle streaming
+    if (stream) {
+      try {
+        const streamIter = await llmClient.chatCompletionStream(targetModel, messages, options);
+        
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Connection', 'keep-alive');
+        
+        for await (const chunk of streamIter) {
+          if (chunk.choices?.[0]?.delta) {
+            res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+          }
+        }
+        res.write('data: [DONE]\n\n');
+        res.end();
+      } catch (streamErr) {
+        // If streaming fails, fall back to non-streaming
+        console.error('Streaming failed, falling back:', streamErr.message?.slice(0, 80));
+        const result = await llmClient.chatCompletion(targetModel, messages, options);
+        return res.json(result);
+      }
+    } else {
+      // Non-streaming — standard chat completion
+      const result = await llmClient.chatCompletion(targetModel, messages, options);
+      return res.json(result);
+    }
+  } catch (err) {
+    console.error('LLM proxy error:', err.message?.slice(0, 200));
+    
+    // Return OpenAI-compatible error
+    const statusCode = err.message?.includes('rate') ? 429 :
+                       err.message?.includes('model') ? 400 : 500;
+    
+    res.status(statusCode).json({
+      error: {
+        message: err.message?.slice(0, 300) || 'Internal LLM proxy error',
+        type: statusCode === 429 ? 'rate_limit_error' : 
+              statusCode === 400 ? 'invalid_request_error' : 'upstream_error',
+        code: 'llm_proxy_error',
+      }
+    });
+  }
+});
+
+/**
+ * GET /v1/models
+ * List available LLM models (FREE — no payment required)
+ */
+app.get('/v1/models', (req, res) => {
+  const models = FREE_NVIDIA_MODELS.map(m => ({
+    id: m.id,
+    object: 'model',
+    created: 1784350000,
+    owned_by: 'nvidia',
+    permission: [{
+      allow_create: false,
+      allow_sampling: true,
+      allow_logprobs: false,
+      allow_search_indices: false,
+      allow_view: true,
+      allow_fine_tuning: false,
+      organization: '*',
+      group: null,
+      is_blocking: false,
+    }],
+    // Custom metadata
+    context_length: m.context,
+    features: m.features,
+    pricing: { prompt: '$0.00', completion: '$0.00' },  // Free upstream
+    x402_price: '$0.01 per request',
+  }));
+
+  res.json({
+    object: 'list',
+    data: models,
+    x402_note: 'POST /v1/chat/completions costs $0.01 USDC on Base per request',
+  });
+});
+
 // ─── FREE ENDPOINTS (no payment required) ──────────────────────────
 
 // Root landing page — no 404!
 app.get('/', (req, res) => {
   res.json({
-    name: 'x402 GitHub & NPM Stats API',
-    tagline: 'Real-time data for AI agents. Pay per request in USDC on Base.',
+    name: 'x402 AI Agent Hub — Data API + LLM Proxy',
+    tagline: 'Real-time data + LLM chat for AI agents. Pay per request in USDC on Base.',
     wallet: RECIPIENT,
     facilitator: CDP_API_KEY_NAME ? 'CDP (Coinbase)' : 'OpenX402',
+    llm_proxy: llmClient ? 'online' : 'offline',
     endpoints: {
       paid: {
+        '/v1/chat/completions': { method: 'POST', price: '$0.01', desc: 'OpenAI-compatible LLM chat (8 free NVIDIA models)', body: '{ model, messages, max_tokens, temperature, stream }' },
         '/trending': { price: '$0.01', desc: 'GitHub trending repos', params: '?language=&since=weekly' },
         '/repo-stats': { price: '$0.02', desc: 'Deep repo analytics', params: '?owner=USER&repo=REPO' },
         '/npm-downloads': { price: '$0.01', desc: 'NPM package stats', params: '?package=NAME&period=month' },
@@ -446,6 +620,7 @@ app.get('/', (req, res) => {
         '/defi-yields': { price: '$0.02', desc: 'DeFi yield rates', params: '?chain=ethereum' },
       },
       free: {
+        '/v1/models': 'List available LLM models',
         '/health': 'Service health check',
         '/openapi.json': 'OpenAPI 3.0 spec',
         '/.well-known/agent.json': 'A2A agent discovery',
@@ -454,6 +629,7 @@ app.get('/', (req, res) => {
         '/llms.txt': 'LLM discoverability',
       },
     },
+    models: FREE_NVIDIA_MODELS.map(m => m.id),
     payment: { network: 'Base (eip155:8453)', asset: 'USDC', protocol: 'x402 v2' },
     links: { openapi: `${SERVICE_URL.replace(/\/$/,'')}/openapi.json`, llms_txt: `${SERVICE_URL.replace(/\/$/,'')}/llms.txt` },
   });
@@ -462,17 +638,21 @@ app.get('/', (req, res) => {
 app.get('/health', (req, res) => {
   res.json({
     status: 'alive',
-    service: 'x402-github-stats',
+    service: 'x402-ai-agent-hub',
     x402_ready: x402Ready,
     x402_error: x402Error,
+    llm_proxy: llmClient ? 'online' : 'offline',
+    llm_models: llmModels.length || FREE_NVIDIA_MODELS.length,
     recipient: RECIPIENT?.slice(0, 8) + '...',
     endpoints: {
-      '/trending': '$0.01 — GitHub trending repos',
-      '/repo-stats': '$0.02 — Deep repo analytics',
-      '/npm-downloads': '$0.01 — NPM package stats',
-      '/hackernews': '$0.01 — HN top stories + sentiment',
-      '/defi-yields': '$0.02 — DeFi yield rates',
-      '/health': 'FREE — This health check',
+      'POST /v1/chat/completions': '$0.01 — LLM chat (8 NVIDIA models)',
+      'GET /v1/models': 'FREE — List models',
+      'GET /trending': '$0.01 — GitHub trending repos',
+      'GET /repo-stats': '$0.02 — Deep repo analytics',
+      'GET /npm-downloads': '$0.01 — NPM package stats',
+      'GET /hackernews': '$0.01 — HN top stories + sentiment',
+      'GET /defi-yields': '$0.02 — DeFi yield rates',
+      'GET /health': 'FREE — This health check',
     },
     timestamp: new Date().toISOString(),
   });
@@ -852,11 +1032,16 @@ app.get('/.well-known/x402', (req, res) => {
     version: '2.0',
     openapi_url: `${SERVICE_URL}/openapi.json`,
     endpoints: [
+      { path: '/v1/chat/completions', method: 'POST', price: '$0.01', description: 'OpenAI-compatible LLM chat (8 NVIDIA models)' },
       { path: '/trending', method: 'GET', price: '$0.01', description: 'GitHub trending repos' },
       { path: '/repo-stats', method: 'GET', price: '$0.02', description: 'Deep repo analytics' },
       { path: '/npm-downloads', method: 'GET', price: '$0.01', description: 'NPM download stats' },
       { path: '/hackernews', method: 'GET', price: '$0.01', description: 'HN stories + sentiment' },
       { path: '/defi-yields', method: 'GET', price: '$0.02', description: 'DeFi yield rates' },
+    ],
+    free_endpoints: [
+      { path: '/v1/models', method: 'GET', description: 'List available LLM models' },
+      { path: '/health', method: 'GET', description: 'Service health check' },
     ],
     payment: {
       networks: ['eip155:8453'],
@@ -873,6 +1058,48 @@ app.get('/.well-known/x402/bazaar', (req, res) => {
   res.json({
     version: '2.0',
     resources: [
+      {
+        path: '/v1/chat/completions',
+        method: 'POST',
+        price: '$0.01',
+        network: 'eip155:8453',
+        description: 'OpenAI-compatible LLM chat completions — 8 free NVIDIA models (GPT-OSS 120B, Mistral Large 3, Qwen 3.5, Llama 4, etc.)',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            model: { type: 'string', description: 'Model ID (default: nvidia/gpt-oss-120b)', default: 'nvidia/gpt-oss-120b', enum: FREE_NVIDIA_MODELS.map(m => m.id) },
+            messages: {
+              type: 'array',
+              description: 'OpenAI-format messages array',
+              items: {
+                type: 'object',
+                properties: {
+                  role: { type: 'string', enum: ['system', 'user', 'assistant'] },
+                  content: { type: 'string' },
+                },
+                required: ['role', 'content'],
+              },
+            },
+            max_tokens: { type: 'integer', description: 'Max tokens to generate', default: 256 },
+            temperature: { type: 'number', description: 'Sampling temperature (0-2)', default: 0.7 },
+            stream: { type: 'boolean', description: 'Enable streaming', default: false },
+          },
+          required: ['messages'],
+        },
+        outputSchema: {
+          type: 'object',
+          description: 'OpenAI-compatible chat completion response',
+          properties: {
+            id: { type: 'string' },
+            object: { type: 'string', example: 'chat.completion' },
+            model: { type: 'string' },
+            choices: { type: 'array' },
+            usage: { type: 'object' },
+          },
+        },
+        example_input: { model: 'nvidia/gpt-oss-120b', messages: [{ role: 'user', content: 'Hello!' }] },
+        example_output: { id: 'chatcmpl-abc', object: 'chat.completion', model: 'nvidia/gpt-oss-120b', choices: [{ index: 0, message: { role: 'assistant', content: 'Hello! How can I help you today?' }, finish_reason: 'stop' }] },
+      },
       {
         path: '/trending',
         method: 'GET',
@@ -1040,11 +1267,20 @@ app.get('/.well-known/x402/bazaar', (req, res) => {
 
 // ─── llms.txt for LLM discoverability ──────────────────────────────
 app.get('/llms.txt', (req, res) => {
-  res.type('text/plain').send(`# x402 GitHub & NPM Stats API
+  res.type('text/plain').send(`# x402 AI Agent Hub — Data API + LLM Proxy
 
-> Real-time data for AI agents. Pay per request via x402 (USDC on Base).
+> Real-time data + LLM chat for AI agents. Pay per request via x402 (USDC on Base).
 
-## Endpoints
+## LLM Proxy (OpenAI-compatible)
+
+- POST /v1/chat/completions ($0.01) — Chat completions with 8 free NVIDIA models
+  - Models: nvidia/gpt-oss-120b (default), nvidia/gpt-oss-20b, nvidia/mistral-large-3-675b, nvidia/qwen3.5-122b-a10b, nvidia/qwen3-next-80b-a3b-instruct, nvidia/llama-4-maverick, nvidia/seed-oss-36b, nvidia/nemotron-3-nano-omni-30b-a3b-reasoning
+  - Supports: streaming, system/user/assistant messages, max_tokens, temperature
+  - Compatible with: OpenAI SDK, LangChain, Vercel AI SDK, any OpenAI client
+  - Just change base_url to this service URL
+- GET /v1/models (FREE) — List all available models
+
+## Data Endpoints
 
 - GET /trending?language=&since=weekly ($0.01) — GitHub trending repos with stars, growth rate, languages
 - GET /repo-stats?owner=USER&repo=REPO ($0.02) — Deep repo health: contributors, language breakdown, health score, activity level
@@ -1057,18 +1293,23 @@ app.get('/llms.txt', (req, res) => {
 
 USDC on Base (eip155:8453) via x402 protocol. Facilitator: facilitator.openx402.ai. No API keys needed.
 
+## Quick Start (OpenAI SDK)
+
+\`\`\`
+import OpenAI from 'openai';
+const client = new OpenAI({
+  baseURL: 'https://myearnings-seven.vercel.app/v1',
+  // x402 payment handled automatically by agent
+});
+const response = await client.chat.completions.create({
+  model: 'nvidia/gpt-oss-120b',
+  messages: [{ role: 'user', content: 'Hello!' }],
+});
+\`\`\`
+
 ## OpenAPI Spec
 
 GET /openapi.json — Full OpenAPI 3.0 specification
-
-## Example
-
-\`\`\`
-curl https://your-service.vercel.app/trending
-# → 402 Payment Required (USDC $0.01 on Base)
-# → Agent signs payment, retries with X-PAYMENT header
-# → 200 OK with JSON data
-\`\`\`
 `);
 });
 
@@ -1076,12 +1317,17 @@ curl https://your-service.vercel.app/trending
 app.listen(PORT, () => {
   console.log('');
   console.log('🚀 ═══════════════════════════════════════════════════════');
-  console.log('   x402 GitHub & NPM Stats API');
+  console.log('   x402 AI Agent Hub — Data API + LLM Proxy');
   console.log('═══════════════════════════════════════════════════════');
   console.log(`   Status:  ${x402Ready ? '✅ Ready to earn' : '❌ x402 not loaded'}`);
   console.log(`   Wallet:  ${RECIPIENT?.slice(0, 10)}...${RECIPIENT?.slice(-6)}`);
+  console.log(`   LLM:     ${llmClient ? '✅ Online (8 free NVIDIA models)' : '❌ Offline'}`);
   console.log('───────────────────────────────────────────────────────');
-  console.log('   PAID ENDPOINTS:');
+  console.log('   LLM PROXY:');
+  console.log('   POST /v1/chat/completions  $0.01  OpenAI-compatible chat');
+  console.log('   GET  /v1/models            FREE   List models');
+  console.log('───────────────────────────────────────────────────────');
+  console.log('   DATA ENDPOINTS:');
   console.log('   GET /trending      $0.01  GitHub trending repos');
   console.log('   GET /repo-stats    $0.02  Deep repo analytics');
   console.log('   GET /npm-downloads $0.01  NPM package stats');
